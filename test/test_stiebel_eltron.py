@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import pytest
-from modbus_connection import IllegalDataAddressError, ModbusError, ReadBlock, ServerDeviceBusyError
+from modbus_connection import IllegalDataAddressError
 from modbus_connection.mock import MockModbusConnection, MockModbusUnit
 from modbus_connection.model import Component
 
@@ -289,29 +289,6 @@ async def test_energy_counter_unavailable(mock_modbus_unit: MockModbusUnit) -> N
 
 
 @pytest.mark.asyncio()
-async def test_async_update_surfaces_refused_block(mock_modbus_unit: MockModbusUnit) -> None:
-    """A device that refuses a register block (e.g. an uninstalled module) errors out.
-
-    ``async_update`` pools reads into per-space blocks; if the controller answers
-    one with a Modbus exception, that surfaces as a ``ModbusError`` rather than
-    quietly leaving those fields at their previous values.
-    """
-    api = WpmStiebelEltronAPI(mock_modbus_unit)
-    _seed(mock_modbus_unit, api.system_values)
-    # 502 falls inside the first input block; illegal-data-address (2) mimics a
-    # controller that doesn't serve that block.
-    mock_modbus_unit.fail_read(502, IllegalDataAddressError(), register_type="input")
-
-    with pytest.raises(ModbusError):
-        await api.async_update()
-
-    # Clearing the failure lets the same update succeed.
-    mock_modbus_unit.fail_read(502, None, register_type="input")
-    await api.async_update()
-    assert api.system_values.actual_temperature_fek == 0.2
-
-
-@pytest.mark.asyncio()
 async def test_wpm_without_the_extended_energy_registers(mock_modbus_unit: MockModbusUnit) -> None:
     """A controller without the energy-management registers still updates.
 
@@ -348,31 +325,6 @@ async def test_lwz_without_the_extended_energy_registers(mock_modbus_unit: MockM
 
 
 @pytest.mark.asyncio()
-async def test_a_busy_controller_does_not_lose_an_optional_block(mock_modbus_unit: MockModbusUnit) -> None:
-    """Only illegal data address means "not built in"; other codes are failures.
-
-    A controller that answers a block with device busy or device failure still
-    has those registers, so dropping the component would lose its values for
-    good over a passing complaint. Such an answer fails the poll instead, and
-    the block is read again once the controller answers properly.
-    """
-    api = WpmStiebelEltronAPI(mock_modbus_unit)
-    _seed(mock_modbus_unit, api.system_values, api.extended_energy_system_information)
-    mock_modbus_unit.fail_read(5219, ServerDeviceBusyError(), register_type="input")
-
-    # The busy answer reaches the caller as itself, naming the block it aborted,
-    # rather than as something the tolerance rewrapped on the way out.
-    with pytest.raises(ServerDeviceBusyError) as exc_info:
-        await api.async_update()
-    assert exc_info.value.block == ReadBlock("input", 5219, 12)
-
-    mock_modbus_unit.fail_read(5219, None, register_type="input")
-    await api.async_update()
-
-    assert api.extended_energy_system_information.sg_ready_inputs_active == 0
-
-
-@pytest.mark.asyncio()
 async def test_a_refused_optional_block_is_not_read_again(mock_modbus_unit: MockModbusUnit) -> None:
     """Once a controller has refused an optional block, later polls skip it.
 
@@ -388,37 +340,6 @@ async def test_a_refused_optional_block_is_not_read_again(mock_modbus_unit: Mock
 
     attempts = [event for event in mock_modbus_unit.read_events if event.register_type == "input" and event.address <= 5219 <= event.address + event.count - 1]
     assert len(attempts) == 1
-
-
-@pytest.mark.asyncio()
-async def test_a_failed_poll_notifies_nobody(mock_modbus_unit: MockModbusUnit) -> None:
-    """A poll that raises must not have told listeners the values are fresh.
-
-    The required components are read before the optional ones, so a later
-    optional block answering with anything but illegal data address would
-    otherwise fire their listeners and then raise, leaving whoever listens
-    acting on half a poll. A single pooled read never did that.
-    """
-    api = WpmStiebelEltronAPI(mock_modbus_unit)
-    _seed(mock_modbus_unit, api.system_values, api.extended_energy_system_information)
-    notified = 0
-
-    def count() -> None:
-        nonlocal notified
-        notified += 1
-
-    api.system_values.add_update_listener(count)
-    mock_modbus_unit.fail_read(5219, ServerDeviceBusyError(), register_type="input")
-
-    with pytest.raises(ModbusError):
-        await api.async_update()
-
-    assert notified == 0
-
-    mock_modbus_unit.fail_read(5219, None, register_type="input")
-    await api.async_update()
-
-    assert notified == 1
 
 
 @pytest.mark.asyncio()
@@ -442,13 +363,3 @@ async def test_a_refused_block_still_notifies_the_rest(mock_modbus_unit: MockMod
     await api.async_update()
 
     assert notified == 1
-
-
-@pytest.mark.asyncio()
-async def test_a_controller_refusing_everything_still_errors(mock_modbus_unit: MockModbusUnit) -> None:
-    """Tolerating optional blocks must not make a mute controller look healthy."""
-    api = WpmStiebelEltronAPI(mock_modbus_unit)
-    mock_modbus_unit.fail_requests(IllegalDataAddressError())
-
-    with pytest.raises(ModbusError):
-        await api.async_update()

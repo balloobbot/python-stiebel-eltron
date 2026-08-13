@@ -1,8 +1,8 @@
 """Generate the model-based Stiebel Eltron heat pump modules from the CSV maps.
 
 Each register block in ``api/*.csv`` becomes a ``modbus_connection.model``
-``Component`` of typed fields; a controller groups its components behind one
-``ComponentGroup``. Contiguous repeated sub-units (a WPM's heat-pump modules and
+``Component`` of typed fields; a controller polls its components through one
+``ControllerComponents``. Contiguous repeated sub-units (a WPM's heat-pump modules and
 per-circuit room temperatures) are emitted as ``repeating_group`` sub-components.
 The module text is rendered from ``scripts/templates/module.py.j2``. Run from the
 repo root: ``python scripts/generate.py``.
@@ -61,9 +61,9 @@ class Block:
     space: str  # "input" or "holding"
     energy: bool = False  # apply the LOW/HI + day-and-total energy handling
     repeats: list[Repeat] = field(default_factory=list)  # sub-units to fold out
-    # A block real machines are known to refuse: read on its own and dropped
-    # when the controller answers it with illegal data address, rather than
-    # failing the whole poll. See ControllerComponents.
+    # A block real machines are known to refuse: dropped once the controller
+    # answers it with illegal data address, rather than reported as a failed
+    # read. See ControllerComponents.
     optional: bool = False
 
 
@@ -224,7 +224,7 @@ class Component:
     repeats: list[str] = field(default_factory=list)  # "attr = repeating_group(...)"
     compressor_starts: bool = False
     day_and_total: list[tuple[str, str, str]] = field(default_factory=list)
-    optional: bool = False  # read on its own, and dropped when the controller refuses it
+    optional: bool = False  # dropped when the controller refuses it
 
 
 def _read_rows(api_path: Path, block: Block) -> list[list[str]]:
@@ -384,7 +384,7 @@ def _imports(controller: Controller, components: list[Component]) -> list[str]:
         model.append("boolean")
     if any(component.repeats for component in components):
         model.append("repeating_group")
-    local = ["UNAVAILABLE"]
+    local = ["UNAVAILABLE", "UpdateReport"]
     if any(block.energy for block in controller.blocks):
         local.append("scaled_sum")
     if any("in_range(" in line for component in components for line in component.fields):

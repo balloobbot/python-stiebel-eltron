@@ -1,31 +1,41 @@
-"""Reading the components of one controller, including the ones it may not serve."""
+"""Reading the components of one controller, one block at a time."""
 
 from __future__ import annotations
 
 import logging
-from collections.abc import Iterable
+from collections.abc import Mapping
 
-from modbus_connection import IllegalDataAddressError, ModbusUnit
-from modbus_connection.model import Component, ComponentGroup
+from modbus_connection import IllegalDataAddressError, ModbusConnectionError, ModbusError
+from modbus_connection.model import Component
+
+from . import UpdateReport
 
 _LOGGER = logging.getLogger(__package__)
 
 
 class ControllerComponents:
-    """The components of one controller, refreshed in one poll.
+    """The components of one controller, each read on its own.
 
     Stiebel documents register blocks that not every controller and firmware
     actually serves - the energy-management extension, the inverter and
     efficiency figures - and no register says which of them a given machine has.
     A controller answers a read of a block it does not implement with a Modbus
-    exception (illegal data address), and one such block fails an entire pooled
-    read, so a machine without an optional block could not be read at all.
+    exception (illegal data address).
 
-    Hence the split: the components every controller serves are pooled into one
-    set of block reads and still fail the poll when they fail, because then
-    something is genuinely wrong. An optional component is read on its own, and
-    the first time the controller refuses it, it is dropped for the life of this
-    object, so no later poll wastes a round trip on it.
+    The reads are not pooled. One pooled read is all-or-nothing: the first block
+    the controller refused or answered too slowly aborted the poll, threw away
+    what had already been read and left every value of the machine unavailable
+    over one sluggish block. Each component is read on its own instead, so a
+    failure costs that component's values and nothing else - it keeps the values
+    of its last successful read and is named in the returned
+    :class:`~pystiebeleltron.UpdateReport` with the error that failed it.
+
+    An ``optional`` component is one real machines are known to refuse. The first
+    time the controller answers it with illegal data address it is dropped for
+    the life of this object, so no later poll wastes a round trip on it, and it
+    counts as absent rather than failed. Every other answer means the registers
+    are there and the read went wrong, so it is reported as a failure and read
+    again next poll.
 
     A machine that does not have the block refuses it on the very first read,
     before any value was stored, so its fields read ``None`` from then on, the
@@ -35,56 +45,50 @@ class ControllerComponents:
     instead, until the object is rebuilt. Clearing them would take a public way
     to invalidate a ``Component``'s cache, which ``modbus_connection`` does not
     expose.
-
-    An optional component costs one extra read per poll while the controller
-    does serve it. That is the price of being able to tell "this machine does
-    not have it" from "this read failed", which the protocol itself does not
-    distinguish.
     """
 
     def __init__(
         self,
-        unit: ModbusUnit,
-        required: Iterable[Component],
-        optional: Iterable[Component] = (),
+        required: Mapping[str, Component],
+        optional: Mapping[str, Component] | None = None,
     ) -> None:
-        """Pool ``required`` into one read; read each of ``optional`` on its own."""
-        self._required = list(required)
-        self._group = ComponentGroup(unit, self._required)
-        self._optional = list(optional)
+        """Poll every component by name; drop an ``optional`` one the controller refuses."""
+        self._components = {**required, **(optional or {})}
+        self._optional = frozenset(optional or ())
 
-    async def async_update(self) -> None:
-        """Read the required components, then the optional ones still in play.
+    def _drop(self, name: str, err: IllegalDataAddressError) -> None:
+        del self._components[name]
+        _LOGGER.info(
+            "The controller does not serve the registers of %s, so they stay unavailable and are not read again: %s",
+            name,
+            err,
+        )
 
-        Raises whatever the pooled read raises. An optional block answered with
-        illegal data address is not an error of the poll: that is how a
-        controller says it does not have the block. Any other answer means the
-        registers are there and the read went wrong, so it fails the poll and
-        the block is read again next time.
+    async def async_update(self) -> UpdateReport:
+        """Read every component still in play and report what refreshed.
 
-        Nothing is notified until every read that could still fail the poll has
-        succeeded. Reading in sequence would otherwise let a poll tell listeners
-        the required values are fresh and then raise over a later optional
-        block, leaving them acting on half a poll - which one pooled read never
-        did.
+        Listeners fire only once every component has been tried, and only for
+        the ones that refreshed: notifying as we go would let a listener act on
+        half a poll. A failure of the link itself is not one block's problem, so
+        it raises rather than reporting every remaining block as failed.
         """
-        await self._group.async_update(notify=False)
-        updated = []
-        for component in list(self._optional):
+        updated: set[str] = set()
+        failed: dict[str, ModbusError] = {}
+        for name, component in list(self._components.items()):
             try:
                 await component.async_update(notify=False)
-            # The only answer that means "not built in": device failure and
-            # device busy both say the registers are there and the read went
-            # wrong, so they stay uncaught and fail the poll.
+            except ModbusConnectionError:
+                raise
             except IllegalDataAddressError as err:
-                self._optional.remove(component)
-                _LOGGER.info(
-                    "The controller does not serve the registers of %s, so they stay unavailable and are not read again: %s",
-                    type(component).__name__,
-                    err,
-                )
+                if name in self._optional:
+                    self._drop(name, err)
+                else:
+                    failed[name] = err
+            except ModbusError as err:
+                failed[name] = err
             else:
-                updated.append(component)
+                updated.add(name)
 
-        for component in (*self._required, *updated):
-            component.notify()
+        for name in updated:
+            self._components[name].notify()
+        return UpdateReport(updated, failed)

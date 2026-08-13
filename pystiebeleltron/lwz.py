@@ -7,7 +7,7 @@ from enum import Enum
 from modbus_connection import ModbusUnit
 from modbus_connection.model import Component, boolean, gauge, integer
 
-from . import UNAVAILABLE, in_range, scaled_sum
+from . import UNAVAILABLE, UpdateReport, in_range, scaled_sum
 from ._components import ControllerComponents
 
 LWZ_HOLDING_RANGES = ((1000, 1026), (4000, 4002), (4249, 4277))
@@ -218,12 +218,12 @@ class LwzEnergySystemInformation(Component):
 
 
 class LwzExtendedEnergyData(Component):
-    """Registers not every machine serves, read on their own.
+    """Registers not every machine serves.
 
     A controller without them answers the block with illegal data address, which
-    would fail a pooled read for everything else too, so
-    :class:`~pystiebeleltron._components.ControllerComponents` reads this block
-    separately and drops it once the controller has refused it.
+    :class:`~pystiebeleltron._components.ControllerComponents` reads as "not
+    built in": the block is dropped after the first refusal instead of being
+    reported as a failed read, and its fields stay ``None``.
     """
 
     register_space = "input"
@@ -242,12 +242,12 @@ class LwzExtendedEnergyData(Component):
 
 
 class LwzExtendedEnergyManagementSettings(Component):
-    """Registers not every machine serves, read on their own.
+    """Registers not every machine serves.
 
     A controller without them answers the block with illegal data address, which
-    would fail a pooled read for everything else too, so
-    :class:`~pystiebeleltron._components.ControllerComponents` reads this block
-    separately and drops it once the controller has refused it.
+    :class:`~pystiebeleltron._components.ControllerComponents` reads as "not
+    built in": the block is dropped after the first refusal instead of being
+    reported as a failed read, and its fields stay ``None``.
     """
 
     register_space = "holding"
@@ -272,12 +272,12 @@ class LwzExtendedEnergyManagementSettings(Component):
 
 
 class LwzExtendedEnergySystemInformation(Component):
-    """Registers not every machine serves, read on their own.
+    """Registers not every machine serves.
 
     A controller without them answers the block with illegal data address, which
-    would fail a pooled read for everything else too, so
-    :class:`~pystiebeleltron._components.ControllerComponents` reads this block
-    separately and drops it once the controller has refused it.
+    :class:`~pystiebeleltron._components.ControllerComponents` reads as "not
+    built in": the block is dropped after the first refusal instead of being
+    reported as a failed read, and its fields stay ``None``.
     """
 
     register_space = "input"
@@ -303,26 +303,25 @@ class LwzStiebelEltronAPI:
         self.extended_energy_data = LwzExtendedEnergyData(unit)
         self.extended_energy_management_settings = LwzExtendedEnergyManagementSettings(unit)
         self.extended_energy_system_information = LwzExtendedEnergySystemInformation(unit)
-        self._group = ControllerComponents(
-            unit,
-            required=[
-                self.system_values,
-                self.system_parameters,
-                self.system_state,
-                self.energy_data,
-                self.energy_management_settings,
-                self.energy_system_information,
-            ],
-            optional=[
-                self.extended_energy_data,
-                self.extended_energy_management_settings,
-                self.extended_energy_system_information,
-            ],
+        self._components = ControllerComponents(
+            required={
+                "system_values": self.system_values,
+                "system_parameters": self.system_parameters,
+                "system_state": self.system_state,
+                "energy_data": self.energy_data,
+                "energy_management_settings": self.energy_management_settings,
+                "energy_system_information": self.energy_system_information,
+            },
+            optional={
+                "extended_energy_data": self.extended_energy_data,
+                "extended_energy_management_settings": self.extended_energy_management_settings,
+                "extended_energy_system_information": self.extended_energy_system_information,
+            },
         )
 
-    async def async_update(self) -> None:
-        """Read every component the controller serves, in one poll."""
-        await self._group.async_update()
+    async def async_update(self) -> UpdateReport:
+        """Read every component the controller serves, each block on its own."""
+        return await self._components.async_update()
 
     def get_current_temp(self) -> float | None:
         """Get the current room temperature."""

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from enum import Enum
 from typing import Any
 
@@ -55,6 +56,26 @@ def in_range(minimum: float, maximum: float) -> WriteValidator:
         return value
 
     return validate
+
+
+@dataclass(frozen=True)
+class UpdateReport:
+    """What one poll refreshed, by the API's component attribute names.
+
+    A failed component kept the values of its last successful read and did not
+    notify; the error that failed it rides along. A block the controller does
+    not serve at all is in neither set - absent is not a failure. A dead link is
+    never in here either: the update raises ``ModbusConnectionError`` instead of
+    reporting partial silence.
+    """
+
+    updated: set[str]
+    failed: dict[str, ModbusError]
+
+    @property
+    def complete(self) -> bool:
+        """Whether every polled component refreshed."""
+        return not self.failed
 
 
 class StiebelEltronModbusError(Exception):

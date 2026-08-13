@@ -39,12 +39,12 @@ class {{ sub.class_name }}(Component):
 {% for component in components %}
 class {{ component.class_name }}(Component):
 {% if component.optional %}
-    """Registers not every machine serves, read on their own.
+    """Registers not every machine serves.
 
     A controller without them answers the block with illegal data address, which
-    would fail a pooled read for everything else too, so
-    :class:`~pystiebeleltron._components.ControllerComponents` reads this block
-    separately and drops it once the controller has refused it.
+    :class:`~pystiebeleltron._components.ControllerComponents` reads as "not
+    built in": the block is dropped after the first refusal instead of being
+    reported as a failed read, and its fields stay ``None``.
     """
 
 {% endif %}
@@ -107,25 +107,24 @@ class {{ api_class }}:
 {% for member, class_name in members %}
         self.{{ member }} = {{ class_name }}(unit)
 {% endfor %}
-        self._group = ControllerComponents(
-            unit,
-            required=[
+        self._components = ControllerComponents(
+            required={
 {% for member in required_members %}
-                self.{{ member }},
+                "{{ member }}": self.{{ member }},
 {% endfor %}
-            ],
+            },
 {% if optional_members %}
-            optional=[
+            optional={
 {% for member in optional_members %}
-                self.{{ member }},
+                "{{ member }}": self.{{ member }},
 {% endfor %}
-            ],
+            },
 {% endif %}
         )
 
-    async def async_update(self) -> None:
-        """Read every component the controller serves, in one poll."""
-        await self._group.async_update()
+    async def async_update(self) -> UpdateReport:
+        """Read every component the controller serves, each block on its own."""
+        return await self._components.async_update()
 {% if lwz_helpers %}
 
     def get_current_temp(self) -> float | None:

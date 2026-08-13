@@ -5,7 +5,7 @@ from __future__ import annotations
 from modbus_connection import ModbusUnit
 from modbus_connection.model import Component, boolean, gauge, integer, repeating_group
 
-from . import UNAVAILABLE, in_range, scaled_sum
+from . import UNAVAILABLE, UpdateReport, in_range, scaled_sum
 from ._components import ControllerComponents
 
 WPM_HOLDING_RANGES = ((1500, 1607), (1703, 1751), (4000, 4002), (4249, 4277))
@@ -494,12 +494,12 @@ class WpmEnergySystemInformation(Component):
 
 
 class WpmExtendedSystemParameters(Component):
-    """Registers not every machine serves, read on their own.
+    """Registers not every machine serves.
 
     A controller without them answers the block with illegal data address, which
-    would fail a pooled read for everything else too, so
-    :class:`~pystiebeleltron._components.ControllerComponents` reads this block
-    separately and drops it once the controller has refused it.
+    :class:`~pystiebeleltron._components.ControllerComponents` reads as "not
+    built in": the block is dropped after the first refusal instead of being
+    reported as a failed read, and its fields stay ``None``.
     """
 
     register_space = "holding"
@@ -517,12 +517,12 @@ class WpmExtendedSystemParameters(Component):
 
 
 class WpmExtendedEnergyData(Component):
-    """Registers not every machine serves, read on their own.
+    """Registers not every machine serves.
 
     A controller without them answers the block with illegal data address, which
-    would fail a pooled read for everything else too, so
-    :class:`~pystiebeleltron._components.ControllerComponents` reads this block
-    separately and drops it once the controller has refused it.
+    :class:`~pystiebeleltron._components.ControllerComponents` reads as "not
+    built in": the block is dropped after the first refusal instead of being
+    reported as a failed read, and its fields stay ``None``.
     """
 
     register_space = "input"
@@ -576,12 +576,12 @@ class WpmExtendedEnergyData(Component):
 
 
 class WpmExtendedEnergyManagementSettings(Component):
-    """Registers not every machine serves, read on their own.
+    """Registers not every machine serves.
 
     A controller without them answers the block with illegal data address, which
-    would fail a pooled read for everything else too, so
-    :class:`~pystiebeleltron._components.ControllerComponents` reads this block
-    separately and drops it once the controller has refused it.
+    :class:`~pystiebeleltron._components.ControllerComponents` reads as "not
+    built in": the block is dropped after the first refusal instead of being
+    reported as a failed read, and its fields stay ``None``.
     """
 
     register_space = "holding"
@@ -605,12 +605,12 @@ class WpmExtendedEnergyManagementSettings(Component):
 
 
 class WpmExtendedEnergySystemInformation(Component):
-    """Registers not every machine serves, read on their own.
+    """Registers not every machine serves.
 
     A controller without them answers the block with illegal data address, which
-    would fail a pooled read for everything else too, so
-    :class:`~pystiebeleltron._components.ControllerComponents` reads this block
-    separately and drops it once the controller has refused it.
+    :class:`~pystiebeleltron._components.ControllerComponents` reads as "not
+    built in": the block is dropped after the first refusal instead of being
+    reported as a failed read, and its fields stay ``None``.
     """
 
     register_space = "input"
@@ -637,24 +637,23 @@ class WpmStiebelEltronAPI:
         self.extended_energy_data = WpmExtendedEnergyData(unit)
         self.extended_energy_management_settings = WpmExtendedEnergyManagementSettings(unit)
         self.extended_energy_system_information = WpmExtendedEnergySystemInformation(unit)
-        self._group = ControllerComponents(
-            unit,
-            required=[
-                self.system_values,
-                self.system_parameters,
-                self.system_state,
-                self.energy_data,
-                self.energy_management_settings,
-                self.energy_system_information,
-            ],
-            optional=[
-                self.extended_system_parameters,
-                self.extended_energy_data,
-                self.extended_energy_management_settings,
-                self.extended_energy_system_information,
-            ],
+        self._components = ControllerComponents(
+            required={
+                "system_values": self.system_values,
+                "system_parameters": self.system_parameters,
+                "system_state": self.system_state,
+                "energy_data": self.energy_data,
+                "energy_management_settings": self.energy_management_settings,
+                "energy_system_information": self.energy_system_information,
+            },
+            optional={
+                "extended_system_parameters": self.extended_system_parameters,
+                "extended_energy_data": self.extended_energy_data,
+                "extended_energy_management_settings": self.extended_energy_management_settings,
+                "extended_energy_system_information": self.extended_energy_system_information,
+            },
         )
 
-    async def async_update(self) -> None:
-        """Read every component the controller serves, in one poll."""
-        await self._group.async_update()
+    async def async_update(self) -> UpdateReport:
+        """Read every component the controller serves, each block on its own."""
+        return await self._components.async_update()
