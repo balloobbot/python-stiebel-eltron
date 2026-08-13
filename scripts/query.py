@@ -83,7 +83,7 @@ async def _run(args: argparse.Namespace) -> int:
         api = await _build_api(args, counting)
         counting.reads = 0  # count only the full-device query below
         start = time.monotonic()
-        await api.async_update()
+        report = await api.async_update()
         elapsed = time.monotonic() - start
     except (ModbusError, StiebelEltronModbusError, UnknownControllerModelError) as err:
         print(f"Error reading device: {err}", file=sys.stderr)
@@ -91,6 +91,10 @@ async def _run(args: argparse.Namespace) -> int:
     finally:
         await connection.close()
     _print(api)
+    # Without this a failed block is indistinguishable from a machine that
+    # reports every one of its values as unavailable.
+    for name, error in report.failed.items():
+        print(f"\n{name} could not be read, its values above are stale or empty: {error}", file=sys.stderr)
     print(f"\nQueried in {elapsed * 1000:.0f} ms ({counting.reads} Modbus reads)")
     return 0
 

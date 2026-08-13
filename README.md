@@ -58,6 +58,14 @@ The API takes a [`ModbusUnit`](https://github.com/home-assistant-libs/modbus-con
     asyncio.run(main())
 ```
 
+A poll reads each register block on its own, so one slow or refused block does not take the rest of it with it. `async_update()` returns an `UpdateReport` — a component whose block failed keeps the values of its last successful read, does not notify its listeners, and is listed by attribute name with the error that failed it, while every other component refreshes and notifies once the whole poll is done. A block the controller does not serve at all is in neither set. Only a dead link (`ModbusConnectionError`) raises:
+
+```python
+    report = await api.async_update()
+    for name, error in report.failed.items():
+        print(f"{name} kept its previous values: {error}")
+```
+
 ## License
 
 ``python-stiebel-eltron`` is licensed under MIT, for more details check LICENSE.
