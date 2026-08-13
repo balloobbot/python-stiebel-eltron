@@ -177,3 +177,44 @@ async def test_a_controller_refusing_everything_still_reports_it(mock_modbus_uni
         "energy_management_settings",
         "energy_system_information",
     }
+
+
+@pytest.mark.asyncio()
+async def test_the_raw_dump_covers_every_component(mock_modbus_unit: MockModbusUnit) -> None:
+    """Diagnostics wants the whole map, not only what the last poll refreshed.
+
+    Nothing is read only at setup on these controllers - there is no identity
+    block and no probe - so the polled components are the whole map.
+    """
+    api = WpmStiebelEltronAPI(mock_modbus_unit)
+    mock_modbus_unit.input[506] = 100
+
+    raw = await api.async_read_raw()
+
+    assert raw["input"][506] == 100  # a required input block
+    assert 1500 in raw["holding"]  # a required holding block
+    assert 5219 in raw["input"]  # and an optional one
+
+
+@pytest.mark.asyncio()
+async def test_the_raw_dump_leaves_out_a_block_the_controller_does_not_serve(
+    mock_modbus_unit: MockModbusUnit,
+) -> None:
+    """An optional block refused is absent, so it must not fail the download."""
+    api = WpmStiebelEltronAPI(mock_modbus_unit)
+    mock_modbus_unit.fail_read(5219, IllegalDataAddressError(), register_type="input")
+
+    raw = await api.async_read_raw()
+
+    assert 5219 not in raw["input"]
+    assert 506 in raw["input"]  # the rest of the machine still came back
+
+
+@pytest.mark.asyncio()
+async def test_the_raw_dump_raises_on_a_refused_required_block(mock_modbus_unit: MockModbusUnit) -> None:
+    """A required block refused is a fault; a dump hiding it would mislead."""
+    api = WpmStiebelEltronAPI(mock_modbus_unit)
+    mock_modbus_unit.fail_read(502, IllegalDataAddressError(), register_type="input")
+
+    with pytest.raises(IllegalDataAddressError):
+        await api.async_read_raw()

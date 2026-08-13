@@ -657,3 +657,7 @@ class WpmStiebelEltronAPI:
     async def async_update(self) -> UpdateReport:
         """Read every component the controller serves, each block on its own."""
         return await self._components.async_update()
+
+    async def async_read_raw(self) -> dict[str, dict[int, int | bool]]:
+        """Every register this controller serves, undecoded, for diagnostics."""
+        return await self._components.async_read_raw()

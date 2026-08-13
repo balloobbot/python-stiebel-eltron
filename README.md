@@ -66,6 +66,8 @@ A poll reads each register block on its own, so one slow or refused block does n
         print(f"{name} kept its previous values: {error}")
 ```
 
+`async_read_raw()` reads the same blocks and returns them undecoded, `{space: {address: value}}` — the payload a Home Assistant diagnostics download wants, and one that replays straight into the mock backend for a regression test. A block the controller does not serve is left out rather than failing the dump.
+
 ## License
 
 ``python-stiebel-eltron`` is licensed under MIT, for more details check LICENSE.

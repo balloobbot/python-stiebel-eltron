@@ -92,3 +92,27 @@ class ControllerComponents:
         for name in updated:
             self._components[name].notify()
         return UpdateReport(updated, failed)
+
+    async def async_read_raw(self) -> dict[str, dict[int, int | bool]]:
+        """Read every component still in play undecoded, keyed by space and address.
+
+        Nothing is read only at setup here - the controller has no identity
+        block and no probe, so the components a poll walks are the whole map.
+
+        An ``optional`` component the controller does not serve refuses this
+        read too, as long as no poll has dropped it yet. That is absence rather
+        than a failure, so it is left out of the dump instead of failing the
+        whole download; a required component still raises. Being a read like
+        any other, it does not drop the component - a poll does that.
+        """
+        raw: dict[str, dict[int, int | bool]] = {}
+        for name, component in self._components.items():
+            try:
+                values = await component.async_read_raw()
+            except IllegalDataAddressError:
+                if name not in self._optional:
+                    raise
+                continue
+            for space, addresses in values.items():
+                raw.setdefault(space, {}).update(addresses)
+        return raw
