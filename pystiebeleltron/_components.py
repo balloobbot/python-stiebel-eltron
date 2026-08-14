@@ -5,7 +5,12 @@ from __future__ import annotations
 import logging
 from collections.abc import Mapping
 
-from modbus_connection import IllegalDataAddressError, ModbusConnectionError, ModbusError
+from modbus_connection import (
+    IllegalDataAddressError,
+    ModbusConnectionError,
+    ModbusError,
+    ModbusTimeoutError,
+)
 from modbus_connection.model import Component
 
 from . import UpdateReport
@@ -70,7 +75,9 @@ class ControllerComponents:
         Listeners fire only once every component has been tried, and only for
         the ones that refreshed: notifying as we go would let a listener act on
         half a poll. A failure of the link itself is not one block's problem, so
-        it raises rather than reporting every remaining block as failed.
+        it raises rather than reporting every remaining block as failed. Neither
+        is a controller that has answered nothing at all: the first block timing
+        out raises instead of paying one timeout per remaining block.
         """
         updated: set[str] = set()
         failed: dict[str, ModbusError] = {}
@@ -84,6 +91,11 @@ class ControllerComponents:
                     self._drop(name, err)
                 else:
                     failed[name] = err
+            except ModbusTimeoutError as err:
+                # Required components lead, so anything answered is recorded here.
+                if not updated and not failed:
+                    raise  # nothing answered at all: assume the rest time out too
+                failed[name] = err
             except ModbusError as err:
                 failed[name] = err
             else:

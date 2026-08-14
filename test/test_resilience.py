@@ -46,12 +46,12 @@ async def test_a_failed_block_leaves_the_rest_fresh(mock_modbus_unit: MockModbus
 
     mock_modbus_unit.input[506] = 200  # the machine moves on in both blocks
     mock_modbus_unit.input[3500] = 7
-    mock_modbus_unit.fail_read(506, ModbusTimeoutError("slow system values"), register_type="input")
+    mock_modbus_unit.fail_read(506, ServerDeviceBusyError(), register_type="input")
     report = await api.async_update()
 
     assert not report.complete
     assert set(report.failed) == {"system_values"}
-    assert isinstance(report.failed["system_values"], ModbusTimeoutError)
+    assert isinstance(report.failed["system_values"], ServerDeviceBusyError)
     assert "energy_data" in report.updated
     assert api.system_values.outside_temperature == 10.0  # the previous read's value
     assert api.energy_data.vd_heating_day == 7
@@ -65,7 +65,7 @@ async def test_listeners_fire_at_the_end_and_only_for_fresh_components(mock_modb
     api.energy_data.add_update_listener(lambda: seen.append(len(mock_modbus_unit.read_events)))
     api.system_values.add_update_listener(lambda: seen.append(-1))
 
-    mock_modbus_unit.fail_read(506, ModbusTimeoutError("slow system values"), register_type="input")
+    mock_modbus_unit.fail_read(506, ServerDeviceBusyError(), register_type="input")
     mock_modbus_unit.read_events.clear()
     await api.async_update()
 
@@ -73,6 +73,29 @@ async def test_listeners_fire_at_the_end_and_only_for_fresh_components(mock_modb
     # data is read early, so notifying inline would record a lower number. None
     # for the block that failed.
     assert seen == [len(mock_modbus_unit.read_events)]
+
+
+@pytest.mark.asyncio()
+async def test_a_silent_controller_raises_on_the_first_component(mock_modbus_unit: MockModbusUnit) -> None:
+    """Nothing answered, so the remaining blocks would only pay a timeout each."""
+    api = WpmStiebelEltronAPI(mock_modbus_unit)
+    mock_modbus_unit.fail_read(506, ModbusTimeoutError("controller asleep"), register_type="input")
+
+    with pytest.raises(ModbusTimeoutError):
+        await api.async_update()
+
+
+@pytest.mark.asyncio()
+async def test_a_timeout_after_a_block_answered_is_still_contained(mock_modbus_unit: MockModbusUnit) -> None:
+    """One slow block loses its own values only; the controller is plainly there."""
+    api = WpmStiebelEltronAPI(mock_modbus_unit)
+    mock_modbus_unit.fail_read(3500, ModbusTimeoutError("slow energy data"), register_type="input")
+
+    report = await api.async_update()
+
+    assert set(report.failed) == {"energy_data"}
+    assert isinstance(report.failed["energy_data"], ModbusTimeoutError)
+    assert "system_values" in report.updated
 
 
 @pytest.mark.asyncio()
