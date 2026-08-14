@@ -197,6 +197,22 @@ async def test_the_raw_dump_covers_every_component(mock_modbus_unit: MockModbusU
 
 
 @pytest.mark.asyncio()
+async def test_the_raw_dump_does_not_notify(mock_modbus_unit: MockModbusUnit) -> None:
+    """A download must not look like a poll: it refreshes without notifying."""
+    api = WpmStiebelEltronAPI(mock_modbus_unit)
+    mock_modbus_unit.input[506] = 100
+    await api.async_update()
+    seen: list[int] = []
+    api.system_values.add_update_listener(lambda: seen.append(1))
+
+    mock_modbus_unit.input[506] = 200
+    await api.async_read_raw()
+
+    assert seen == []
+    assert api.system_values.outside_temperature == pytest.approx(20.0)  # still refreshed
+
+
+@pytest.mark.asyncio()
 async def test_the_raw_dump_leaves_out_a_block_the_controller_does_not_serve(
     mock_modbus_unit: MockModbusUnit,
 ) -> None:

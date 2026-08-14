@@ -104,11 +104,13 @@ class ControllerComponents:
         than a failure, so it is left out of the dump instead of failing the
         whole download; a required component still raises. Being a read like
         any other, it does not drop the component - a poll does that.
+
+        A download is not a poll, so the fields refresh without notifying.
         """
         raw: dict[str, dict[int, int | bool]] = {}
         for name, component in self._components.items():
             try:
-                values = await component.async_read_raw()
+                values = await component.async_read_raw(notify=False)
             except IllegalDataAddressError:
                 if name not in self._optional:
                     raise
