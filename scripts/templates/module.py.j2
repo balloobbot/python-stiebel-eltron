@@ -122,6 +122,18 @@ class {{ api_class }}:
 {% endif %}
         )
 
+    async def async_update_readings(self) -> UpdateReport:
+        """Read what the machine reports: temperatures, state, energy counters."""
+        return await self._components.async_update_readings()
+
+    async def async_update_settings(self) -> UpdateReport:
+        """Read what the machine has been set to: parameters and management settings.
+
+        A holding register only moves when something writes it, so a caller can
+        read these rarely - and straight after a write, to see what took effect.
+        """
+        return await self._components.async_update_settings()
+
     async def async_update(self) -> UpdateReport:
         """Read every component the controller serves, each block on its own."""
         return await self._components.async_update()

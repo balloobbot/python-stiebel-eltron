@@ -38,6 +38,56 @@ async def test_a_healthy_controller_reports_every_component(
     assert report.updated == {name for name, value in vars(api).items() if isinstance(value, Component)}
 
 
+@pytest.mark.parametrize("api_class", [WpmStiebelEltronAPI, Wpm3iStiebelEltronAPI, LwzStiebelEltronAPI])
+@pytest.mark.asyncio()
+async def test_readings_and_settings_poll_their_own_blocks(
+    mock_modbus_unit: MockModbusUnit,
+    api_class: type[WpmStiebelEltronAPI | Wpm3iStiebelEltronAPI | LwzStiebelEltronAPI],
+) -> None:
+    """Neither method reads a register the other one owns.
+
+    The controller draws the line: what it reports is in the input space, what
+    it has been set to is in the holding space. On a WPM that is four of the
+    eleven blocks and 189 of the 621 registers a full poll reads.
+    """
+    api = api_class(mock_modbus_unit)
+
+    mock_modbus_unit.read_events.clear()
+    readings = await api.async_update_readings()
+    assert {event.register_type for event in mock_modbus_unit.read_events} == {"input"}
+
+    mock_modbus_unit.read_events.clear()
+    settings = await api.async_update_settings()
+    assert {event.register_type for event in mock_modbus_unit.read_events} == {"holding"}
+
+    assert not readings.updated & settings.updated
+    assert readings.updated | settings.updated == {name for name, value in vars(api).items() if isinstance(value, Component)}
+    assert "system_parameters" in settings.updated
+    assert "system_values" in readings.updated
+
+
+@pytest.mark.asyncio()
+async def test_a_settings_poll_of_a_silent_controller_raises(mock_modbus_unit: MockModbusUnit) -> None:
+    """It starts its own cycle, so nothing has answered and the rest would only time out."""
+    api = WpmStiebelEltronAPI(mock_modbus_unit)
+    mock_modbus_unit.fail_read(1500, ModbusTimeoutError("controller asleep"), register_type="holding")
+
+    with pytest.raises(ModbusTimeoutError):
+        await api.async_update_settings()
+
+
+@pytest.mark.asyncio()
+async def test_a_slow_settings_block_is_contained_in_a_full_poll(mock_modbus_unit: MockModbusUnit) -> None:
+    """The readings answered first, so the controller is plainly there."""
+    api = WpmStiebelEltronAPI(mock_modbus_unit)
+    mock_modbus_unit.fail_read(1500, ModbusTimeoutError("slow parameters"), register_type="holding")
+
+    report = await api.async_update()
+
+    assert set(report.failed) == {"system_parameters"}
+    assert "system_values" in report.updated
+
+
 @pytest.mark.asyncio()
 async def test_a_failed_block_leaves_the_rest_fresh(mock_modbus_unit: MockModbusUnit) -> None:
     api = WpmStiebelEltronAPI(mock_modbus_unit)
@@ -69,10 +119,12 @@ async def test_listeners_fire_at_the_end_and_only_for_fresh_components(mock_modb
     mock_modbus_unit.read_events.clear()
     await api.async_update()
 
-    # One notification, counted after every component had been tried - energy
-    # data is read early, so notifying inline would record a lower number. None
-    # for the block that failed.
-    assert seen == [len(mock_modbus_unit.read_events)]
+    # One notification, counted after every component of the readings poll had
+    # been tried - energy data is read early, so notifying inline would record a
+    # lower number. None for the block that failed. The settings poll that
+    # follows is its own and does not hold the readings up.
+    settings_start = next(i for i, event in enumerate(mock_modbus_unit.read_events) if event.register_type == "holding")
+    assert seen == [settings_start]
 
 
 @pytest.mark.asyncio()

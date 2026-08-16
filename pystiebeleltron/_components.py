@@ -21,6 +21,15 @@ _LOGGER = logging.getLogger(__package__)
 class ControllerComponents:
     """The components of one controller, each read on its own.
 
+    What the machine reports and what it has been set to are read by separate
+    methods. The controller draws that line itself: the values, the state and
+    the energy counters are input registers, the parameters and the energy
+    management settings are holding registers, and a holding register only
+    moves when something writes it - the wall controller, the ISG, a schedule
+    or this library. The set points the machine works out for itself, from the
+    heating curve and the mode, are reported in the input space alongside the
+    temperatures, so they refresh with the readings where they belong.
+
     Stiebel documents register blocks that not every controller and firmware
     actually serves - the energy-management extension, the inverter and
     efficiency figures - and no register says which of them a given machine has.
@@ -69,19 +78,37 @@ class ControllerComponents:
             err,
         )
 
-    async def async_update(self) -> UpdateReport:
-        """Read every component still in play and report what refreshed.
+    def _units(self, *, settings: bool) -> dict[str, Component]:
+        """The components of one poll, required ones first as the mapping was built."""
+        return {name: component for name, component in self._components.items() if (component.register_space == "holding") is settings}
 
-        Listeners fire only once every component has been tried, and only for
-        the ones that refreshed: notifying as we go would let a listener act on
-        half a poll. A failure of the link itself is not one block's problem, so
-        it raises rather than reporting every remaining block as failed. Neither
-        is a controller that has answered nothing at all: the first block timing
-        out raises instead of paying one timeout per remaining block.
+    async def async_update_readings(self) -> UpdateReport:
+        """Read what the machine reports: temperatures, state, energy counters."""
+        return await self._async_poll(self._units(settings=False), UpdateReport(set(), {}))
+
+    async def async_update_settings(self) -> UpdateReport:
+        """Read what the machine has been set to: parameters and management settings."""
+        return await self._async_poll(self._units(settings=True), UpdateReport(set(), {}))
+
+    async def async_update(self) -> UpdateReport:
+        """Read readings and settings together, in one report."""
+        report = await self.async_update_readings()
+        return await self._async_poll(self._units(settings=True), report)
+
+    async def _async_poll(self, units: dict[str, Component], report: UpdateReport) -> UpdateReport:
+        """Read each component still in play, adding what happened to ``report``.
+
+        Listeners fire only once every component of this poll has been tried,
+        and only for the ones that refreshed: notifying as we go would let a
+        listener act on half a poll. A failure of the link itself is not one
+        block's problem, so it raises rather than reporting every remaining
+        block as failed. Neither is a controller that has answered nothing at
+        all: a timeout with nothing in the report yet raises instead of paying
+        one timeout per remaining block.
         """
-        updated: set[str] = set()
-        failed: dict[str, ModbusError] = {}
-        for name, component in list(self._components.items()):
+        updated = report.updated
+        failed = report.failed
+        for name, component in units.items():
             try:
                 await component.async_update(notify=False)
             except ModbusConnectionError:
@@ -101,9 +128,10 @@ class ControllerComponents:
             else:
                 updated.add(name)
 
-        for name in updated:
-            self._components[name].notify()
-        return UpdateReport(updated, failed)
+        for name, component in units.items():
+            if name in updated:
+                component.notify()
+        return report
 
     async def async_read_raw(self) -> dict[str, dict[int, int | bool]]:
         """Read every component still in play undecoded, keyed by space and address.
