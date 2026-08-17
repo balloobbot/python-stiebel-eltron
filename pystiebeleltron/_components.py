@@ -84,27 +84,32 @@ class ControllerComponents:
 
     async def async_update_readings(self) -> UpdateReport:
         """Read what the machine reports: temperatures, state, energy counters."""
-        return await self._async_poll(self._units(settings=False), UpdateReport(set(), {}))
+        report = await self._async_poll(self._units(settings=False), UpdateReport(set(), {}))
+        self._notify(report)
+        return report
 
     async def async_update_settings(self) -> UpdateReport:
         """Read what the machine has been set to: parameters and management settings."""
-        return await self._async_poll(self._units(settings=True), UpdateReport(set(), {}))
+        report = await self._async_poll(self._units(settings=True), UpdateReport(set(), {}))
+        self._notify(report)
+        return report
 
     async def async_update(self) -> UpdateReport:
         """Read readings and settings together, in one report."""
-        report = await self.async_update_readings()
-        return await self._async_poll(self._units(settings=True), report)
+        report = await self._async_poll(self._units(settings=False), UpdateReport(set(), {}))
+        await self._async_poll(self._units(settings=True), report)
+        self._notify(report)  # nothing fires until the whole cycle is done
+        return report
 
     async def _async_poll(self, units: dict[str, Component], report: UpdateReport) -> UpdateReport:
         """Read each component still in play, adding what happened to ``report``.
 
-        Listeners fire only once every component of this poll has been tried,
-        and only for the ones that refreshed: notifying as we go would let a
-        listener act on half a poll. A failure of the link itself is not one
-        block's problem, so it raises rather than reporting every remaining
-        block as failed. Neither is a controller that has answered nothing at
-        all: a timeout with nothing in the report yet raises instead of paying
-        one timeout per remaining block.
+        Notifying is the caller's, so a full update fires nothing until both of
+        its polls are done. A failure of the link itself is not one block's
+        problem, so it raises rather than reporting every remaining block as
+        failed. Neither is a controller that has answered nothing at all: a
+        timeout with nothing in the report yet raises instead of paying one
+        timeout per remaining block.
         """
         updated = report.updated
         failed = report.failed
@@ -127,11 +132,16 @@ class ControllerComponents:
                 failed[name] = err
             else:
                 updated.add(name)
-
-        for name, component in units.items():
-            if name in updated:
-                component.notify()
         return report
+
+    def _notify(self, report: UpdateReport) -> None:
+        """Fire the listeners of every component this update refreshed.
+
+        Walked in poll order rather than the report's, which is a set.
+        """
+        for name, component in self._components.items():
+            if name in report.updated:
+                component.notify()
 
     async def async_read_raw(self) -> dict[str, dict[int, int | bool]]:
         """Read every component still in play undecoded, keyed by space and address.

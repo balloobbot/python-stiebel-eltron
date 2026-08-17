@@ -114,17 +114,33 @@ async def test_listeners_fire_at_the_end_and_only_for_fresh_components(mock_modb
     seen: list[int] = []
     api.energy_data.add_update_listener(lambda: seen.append(len(mock_modbus_unit.read_events)))
     api.system_values.add_update_listener(lambda: seen.append(-1))
+    settings_seen: list[int] = []
+    api.system_parameters.add_update_listener(lambda: settings_seen.append(len(mock_modbus_unit.read_events)))
 
     mock_modbus_unit.fail_read(506, ServerDeviceBusyError(), register_type="input")
     mock_modbus_unit.read_events.clear()
     await api.async_update()
 
-    # One notification, counted after every component of the readings poll had
-    # been tried - energy data is read early, so notifying inline would record a
-    # lower number. None for the block that failed. The settings poll that
-    # follows is its own and does not hold the readings up.
-    settings_start = next(i for i, event in enumerate(mock_modbus_unit.read_events) if event.register_type == "holding")
-    assert seen == [settings_start]
+    # One notification each, counted after every component of the whole cycle
+    # had been tried, settings included - energy data is read early, so
+    # notifying inline would record a lower number. None for the block that
+    # failed, and neither of them twice.
+    assert seen == [len(mock_modbus_unit.read_events)]
+    assert settings_seen == [len(mock_modbus_unit.read_events)]
+
+
+@pytest.mark.asyncio()
+async def test_a_settings_poll_notifies_its_own_components(mock_modbus_unit: MockModbusUnit) -> None:
+    """A poll of one half still fires at the end of its own call."""
+    api = WpmStiebelEltronAPI(mock_modbus_unit)
+    fired: list[str] = []
+    api.system_values.add_update_listener(lambda: fired.append("system_values"))
+    api.system_parameters.add_update_listener(lambda: fired.append("system_parameters"))
+
+    report = await api.async_update_settings()
+
+    assert "system_parameters" in report.updated
+    assert fired == ["system_parameters"]
 
 
 @pytest.mark.asyncio()
